@@ -1,6 +1,8 @@
 # Split Panel
 
-Resizable split-panel layout web component. Draggable dividers between panels, horizontal or vertical splits, nesting, pixel/percent min/max constraints, keyboard accessibility, and optional localStorage persistence. No dependencies, no Shadow DOM.
+Resizable split-panel layout web component. Draggable dividers between panels, horizontal or vertical splits, nesting, pixel/percent min/max constraints, keyboard accessibility, and optional localStorage persistence. 3.2 kB JS gzip, 0.7 kB CSS gzip, zero dependencies, no Shadow DOM.
+
+[**Demo**](https://magic-spells.github.io/split-panel/demo/)
 
 ## Install
 
@@ -171,3 +173,9 @@ Combined with `snap`, releasing a drag glides to the nearest snap point — and 
 ## License
 
 MIT
+
+---
+
+<p align="center">
+  Made by <a href="https://github.com/coryschulz">Cory Schulz</a>
+</p>
