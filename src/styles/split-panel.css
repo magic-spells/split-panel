@@ -1,0 +1,121 @@
+:root {
+	--split-panel-gap: 0.5rem;
+	--split-panel-divider-color: #ddd;
+	--split-panel-divider-hover-color: #bbb;
+	--split-panel-divider-active-color: #4299e1;
+	--split-panel-divider-line: 0.125rem;
+	--split-panel-divider-length: 100%;
+	--split-panel-divider-radius: 0.0625rem;
+	--split-panel-focus-ring-color: #4299e1;
+	--split-panel-transition-duration: 120ms;
+	--split-panel-animate-duration: 0s;
+	--split-panel-animate-easing: ease-in-out;
+}
+
+split-panel-group {
+	display: flex;
+	flex-direction: row;
+	width: 100%;
+	height: 100%;
+	min-width: 0;
+	min-height: 0;
+}
+
+split-panel-group[direction='vertical'] {
+	flex-direction: column;
+}
+
+split-panel {
+	flex: var(--split-panel-size, 1) 1 0%;
+	min-width: 0;
+	min-height: 0;
+	overflow: auto;
+	transition: flex-grow var(--split-panel-animate-duration, 0s)
+		var(--split-panel-animate-easing, ease-in-out);
+}
+
+/* live dragging must be instant — only programmatic/snap changes ease */
+/* :not([ready]) suppresses the first paint so authored sizes don't animate in */
+split-panel-group[dragging] > split-panel,
+split-panel-group:not([ready]) > split-panel {
+	transition: none;
+}
+
+split-divider {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 var(--split-panel-gap);
+	cursor: col-resize;
+	touch-action: none;
+}
+
+split-panel-group[direction='vertical'] > split-divider {
+	cursor: row-resize;
+}
+
+/* visual line, centered in the gutter */
+split-divider::before {
+	content: '';
+	width: var(--split-panel-divider-line);
+	height: var(--split-panel-divider-length);
+	border-radius: var(--split-panel-divider-radius);
+	background: var(--split-panel-divider-color);
+	transition: background var(--split-panel-transition-duration) ease;
+}
+
+split-panel-group[direction='vertical'] > split-divider::before {
+	width: var(--split-panel-divider-length);
+	height: var(--split-panel-divider-line);
+}
+
+/* enlarged hit target bleeding past the gutter */
+split-divider::after {
+	content: '';
+	position: absolute;
+	inset: 0 -0.25rem;
+}
+
+split-panel-group[direction='vertical'] > split-divider::after {
+	inset: -0.25rem 0;
+}
+
+split-divider:hover::before {
+	background: var(--split-panel-divider-hover-color);
+}
+
+split-panel-group[dragging] > split-divider::before {
+	background: var(--split-panel-divider-active-color);
+}
+
+split-divider:focus-visible {
+	outline: 0.125rem solid var(--split-panel-focus-ring-color);
+	outline-offset: 0.125rem;
+}
+
+split-panel-group[dragging] {
+	cursor: col-resize;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+split-panel-group[direction='vertical'][dragging] {
+	cursor: row-resize;
+}
+
+/* iframes swallow pointermove — the classic split-pane bug */
+split-panel-group[dragging] iframe {
+	pointer-events: none;
+}
+
+split-panel-group[disabled] > split-divider,
+split-divider[disabled] {
+	cursor: default;
+}
+
+/* a locked divider keeps its gutter but hides the drag handle */
+split-panel-group[disabled] > split-divider::before,
+split-divider[disabled]::before {
+	display: none;
+}

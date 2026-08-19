@@ -1,0 +1,570 @@
+const STORAGE_PREFIX = 'split-panel:';
+
+/**
+ * Resizable split-panel layout. Lays out direct <split-panel> children along one
+ * axis, generates a draggable <split-divider> between each adjacent pair, and
+ * keeps a sizes array (percent shares summing to 100) as the single source of
+ * truth — rendered by writing `--split-panel-size` on each panel.
+ *
+ * With an `id`, committed sizes persist to localStorage and restore on load.
+ * @class SplitPanelGroup
+ * @extends HTMLElement
+ */
+export class SplitPanelGroup extends HTMLElement {
+	static observedAttributes = ['direction', 'disabled'];
+
+	#panels = [];
+	#dividers = [];
+	#sizes = [];
+	#initialSizes = [];
+	#drag = null;
+	#initialized = false;
+	#visibleObserver = null;
+
+	constructor() {
+		super();
+		const _ = this;
+		_.handlers = {
+			pointerDown: (e) => _.#handlePointerDown(e),
+			pointerMove: (e) => _.#handlePointerMove(e),
+			pointerEnd: (e) => _.#handlePointerEnd(e),
+			doubleClick: (e) => _.#handleDoubleClick(e),
+			keyDown: (e) => _.#handleKeyDown(e),
+		};
+	}
+
+	connectedCallback() {
+		// when the element is defined before the parser reaches its children
+		// (e.g. a synchronous script in <head>), connectedCallback fires with
+		// an empty subtree — defer initialization until parsing finishes
+		if (!this.querySelector(':scope > split-panel') && document.readyState === 'loading') {
+			document.addEventListener('DOMContentLoaded', () => this.#init(), { once: true });
+			return;
+		}
+		this.#init();
+	}
+
+	disconnectedCallback() {
+		this.detachListeners();
+		this.#visibleObserver?.disconnect();
+		this.#visibleObserver = null;
+	}
+
+	attributeChangedCallback(name, previousValue, currentValue) {
+		if (previousValue === currentValue || !this.#initialized) return;
+		if (name === 'direction') {
+			this.#syncOrientation();
+			this.#mirrorConstraints();
+		}
+		if (name === 'disabled') {
+			this.#syncDisabled();
+		}
+	}
+
+	/** @returns {'horizontal' | 'vertical'} the layout axis */
+	get direction() {
+		return this.getAttribute('direction') === 'vertical' ? 'vertical' : 'horizontal';
+	}
+
+	get disabled() {
+		return this.hasAttribute('disabled');
+	}
+
+	set disabled(value) {
+		this.toggleAttribute('disabled', Boolean(value));
+	}
+
+	/** @returns {number[]} current panel sizes (percent shares summing to 100) */
+	get sizes() {
+		return [...this.#sizes];
+	}
+
+	/**
+	 * Sets panel sizes programmatically and commits (dispatches
+	 * `split-panel:resize-end`, persists). Values are normalized to sum to 100.
+	 * @param {number[]} sizes - one non-negative number per panel
+	 */
+	setSizes(sizes) {
+		const valid =
+			Array.isArray(sizes) &&
+			sizes.length === this.#panels.length &&
+			sizes.every((size) => Number.isFinite(size) && size >= 0);
+		if (!valid) return;
+		this.#sizes = this.#normalizeSizes(sizes);
+		this.#applySizes();
+		this.#commit(null);
+	}
+
+	/** Restores every panel to its initial authored size. */
+	resetSizes() {
+		this.setSizes([...this.#initialSizes]);
+	}
+
+	queryDOM() {
+		this.#panels = [...this.querySelectorAll(':scope > split-panel')];
+	}
+
+	attachListeners() {
+		this.#toggleListeners('addEventListener');
+	}
+
+	detachListeners() {
+		this.#toggleListeners('removeEventListener');
+	}
+
+	#toggleListeners(method) {
+		const _ = this;
+		_[method]('pointerdown', _.handlers.pointerDown);
+		_[method]('pointermove', _.handlers.pointerMove);
+		_[method]('pointerup', _.handlers.pointerEnd);
+		_[method]('pointercancel', _.handlers.pointerEnd);
+		_[method]('lostpointercapture', _.handlers.pointerEnd);
+		_[method]('dblclick', _.handlers.doubleClick);
+		_[method]('keydown', _.handlers.keyDown);
+	}
+
+	#init() {
+		if (!this.isConnected) return;
+		this.queryDOM();
+		if (this.#panels.length === 0) return;
+		this.#createDividers();
+		this.#resolveInitialSizes();
+		this.#restoreSavedSizes();
+		this.#syncOrientation();
+		this.#syncDisabled();
+		this.#mirrorConstraints();
+		this.#applySizes();
+		this.#trackVisible();
+		this.attachListeners();
+		this.#initialized = true;
+		// enable size transitions only after the authored layout has painted,
+		// so opting into animation doesn't animate the initial sizes in
+		requestAnimationFrame(() => this.setAttribute('ready', ''));
+	}
+
+	#resolveInitialSizes() {
+		const raw = this.#panels.map((panel) => panel.getAttribute('size'));
+		const horizontal = this.direction === 'horizontal';
+		const dimension = horizontal ? 'width' : 'height';
+
+		// A px `size` maps to a grow weight through the space grow actually
+		// distributes: panel rects (invariant of distribution) minus each panel's
+		// padding+border, which flexbox reserves before growing (same basis the
+		// drag math uses). Only measured when a px size is present.
+		let freeGrow = 0;
+		let extras = [];
+		if (raw.some((value) => value && value.trim().endsWith('px'))) {
+			const panelSpace = this.#panels.reduce(
+				(total, panel) => total + panel.getBoundingClientRect()[dimension],
+				0
+			);
+			extras = this.#panels.map((panel) => this.#panelExtra(panel, horizontal));
+			freeGrow = panelSpace - extras.reduce((total, extra) => total + extra, 0);
+		}
+
+		const authored = raw.map((value, index) => this.#parseSize(value, extras[index] ?? 0, freeGrow));
+		const authoredTotal = authored.reduce((total, size) => total + (size ?? 0), 0);
+		const unsizedCount = authored.filter((size) => size === null).length;
+		const share = unsizedCount > 0 ? Math.max(0, 100 - authoredTotal) / unsizedCount : 0;
+		this.#initialSizes = this.#normalizeSizes(authored.map((size) => size ?? share));
+		this.#sizes = [...this.#initialSizes];
+	}
+
+	// `size` accepts `30` / `30%` (percent share) or `250px` (mapped through the
+	// grow space). Returns a percent share, or null when unset/invalid.
+	#parseSize(raw, extra, freeGrow) {
+		if (!raw) return null;
+		const value = parseFloat(raw);
+		if (!Number.isFinite(value) || value < 0) return null;
+		if (raw.trim().endsWith('px')) {
+			return freeGrow > 0 ? Math.max(0, ((value - extra) / freeGrow) * 100) : null;
+		}
+		return value;
+	}
+
+	#normalizeSizes(sizes) {
+		const total = sizes.reduce((sum, size) => sum + size, 0);
+		if (total <= 0) return sizes.map(() => Math.round(10000 / sizes.length) / 100);
+		return sizes.map((size) => Math.round((size / total) * 10000) / 100);
+	}
+
+	#createDividers() {
+		for (const divider of this.querySelectorAll(':scope > split-divider')) {
+			divider.remove();
+		}
+		this.#dividers = this.#panels.slice(0, -1).map((panel, index) => {
+			const divider = document.createElement('split-divider');
+			divider.setAttribute('role', 'separator');
+			divider.setAttribute('aria-label', `Resize panels ${index + 1} and ${index + 2}`);
+			divider.setAttribute('aria-valuemin', '0');
+			divider.setAttribute('aria-valuemax', '100');
+			panel.after(divider);
+			return divider;
+		});
+	}
+
+	#syncOrientation() {
+		// per ARIA, the separator's orientation describes the line itself —
+		// a horizontal group has vertical divider lines, and vice versa
+		const orientation = this.direction === 'vertical' ? 'horizontal' : 'vertical';
+		for (const divider of this.#dividers) {
+			divider.setAttribute('aria-orientation', orientation);
+		}
+	}
+
+	#syncDisabled() {
+		for (const divider of this.#dividers) {
+			const disabled = this.disabled || divider.hasAttribute('disabled');
+			divider.setAttribute('tabindex', disabled ? '-1' : '0');
+			divider.setAttribute('aria-disabled', String(disabled));
+		}
+	}
+
+	// mirror min/max to inline CSS so the browser enforces constraints
+	// natively during container resizes — no ResizeObserver needed
+	#mirrorConstraints() {
+		const horizontal = this.direction === 'horizontal';
+		for (const panel of this.#panels) {
+			const min = this.#formatConstraint(panel.getAttribute('min'));
+			const max = this.#formatConstraint(panel.getAttribute('max'));
+			panel.style.minWidth = horizontal ? min : '';
+			panel.style.maxWidth = horizontal ? max : '';
+			panel.style.minHeight = horizontal ? '' : min;
+			panel.style.maxHeight = horizontal ? '' : max;
+		}
+	}
+
+	#formatConstraint(raw) {
+		if (!raw) return '';
+		const trimmed = raw.trim();
+		return /^[\d.]+$/.test(trimmed) ? `${trimmed}px` : trimmed;
+	}
+
+	// padding + border sit outside the flex-distributed space — panels can't
+	// shrink below them, and they offset the percent <-> pixel mapping
+	#panelExtra(panel, horizontal) {
+		const style = getComputedStyle(panel);
+		const sides = horizontal
+			? ['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
+			: ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'];
+		return sides.reduce((total, side) => total + parseFloat(style[side]), 0);
+	}
+
+	// resolves a min/max attribute to the same percent units as `size` —
+	// % values pass through, px values map through the distributable space
+	#parseConstraint(raw, extra, flexSpace, fallback) {
+		if (!raw) return fallback;
+		const value = parseFloat(raw);
+		if (!Number.isFinite(value)) return fallback;
+		return raw.trim().endsWith('%') ? value : ((value - extra) / flexSpace) * 100;
+	}
+
+	// Optional readout for effects: expose `--split-panel-visible` (0 at min, 1
+	// at max) on any panel that has a `max`. Layout stays pure flex — this is a
+	// cosmetic reflection of rendered size, so it needs a ResizeObserver to stay
+	// correct across drags, window resizes, and nested groups.
+	#trackVisible() {
+		this.#visibleObserver?.disconnect();
+		this.#visibleObserver = null;
+		const bounded = this.#panels.filter((panel) => panel.hasAttribute('max'));
+		if (bounded.length === 0) return;
+		this.#visibleObserver = new ResizeObserver((entries) => this.#applyVisible(entries));
+		for (const panel of bounded) this.#visibleObserver.observe(panel);
+	}
+
+	#applyVisible(entries) {
+		const _ = this;
+		const horizontal = _.direction === 'horizontal';
+		const axisSpace = _.getBoundingClientRect()[horizontal ? 'width' : 'height'];
+		for (const entry of entries) {
+			const panel = entry.target;
+			const box = entry.borderBoxSize?.[0];
+			const size = box
+				? horizontal
+					? box.inlineSize
+					: box.blockSize
+				: panel.getBoundingClientRect()[horizontal ? 'width' : 'height'];
+			const min = _.#constraintToPixels(panel.getAttribute('min'), axisSpace, 0);
+			const max = _.#constraintToPixels(panel.getAttribute('max'), axisSpace, Infinity);
+			const range = max - min;
+			const visible = range > 0 ? Math.min(Math.max((size - min) / range, 0), 1) : 1;
+			panel.style.setProperty('--split-panel-visible', Math.round(visible * 1000) / 1000);
+		}
+	}
+
+	#constraintToPixels(raw, axisSpace, fallback) {
+		if (!raw) return fallback;
+		const value = parseFloat(raw);
+		if (!Number.isFinite(value)) return fallback;
+		return raw.trim().endsWith('%') ? (value / 100) * axisSpace : value;
+	}
+
+	#applySizes() {
+		this.#panels.forEach((panel, index) => {
+			panel.style.setProperty('--split-panel-size', this.#sizes[index]);
+		});
+		this.#dividers.forEach((divider, index) => {
+			divider.setAttribute('aria-valuenow', String(Math.round(this.#sizes[index])));
+		});
+	}
+
+	/**
+	 * Measures the group's distributable space (panel rects minus each panel's
+	 * padding and border) and resolves the pair's min/max attributes into
+	 * percent-domain bounds on the previous panel. Constant for a whole gesture.
+	 */
+	#measurePair(index) {
+		const _ = this;
+		const horizontal = _.direction === 'horizontal';
+		const dimension = horizontal ? 'width' : 'height';
+		const previousPanel = _.#panels[index];
+		const nextPanel = _.#panels[index + 1];
+		const flexSpace = _.#panels.reduce(
+			(total, panel) =>
+				total + panel.getBoundingClientRect()[dimension] - _.#panelExtra(panel, horizontal),
+			0
+		);
+		if (flexSpace <= 0) return null;
+		const pairPercent = _.#sizes[index] + _.#sizes[index + 1];
+		const previousExtra = _.#panelExtra(previousPanel, horizontal);
+		const nextExtra = _.#panelExtra(nextPanel, horizontal);
+
+		const clampToPair = (value) => Math.min(Math.max(value, 0), pairPercent);
+		const minPrevious = clampToPair(
+			Math.max(
+				_.#parseConstraint(previousPanel.getAttribute('min'), previousExtra, flexSpace, 0),
+				pairPercent -
+					_.#parseConstraint(nextPanel.getAttribute('max'), nextExtra, flexSpace, Infinity)
+			)
+		);
+		const maxPrevious = clampToPair(
+			Math.min(
+				_.#parseConstraint(previousPanel.getAttribute('max'), previousExtra, flexSpace, Infinity),
+				pairPercent - _.#parseConstraint(nextPanel.getAttribute('min'), nextExtra, flexSpace, 0)
+			)
+		);
+
+		return { pairPercent, flexSpace, minPrevious, maxPrevious };
+	}
+
+	/**
+	 * Clamps a target percent share for the previous panel against the pair's
+	 * bounds, writes both neighbors, renders, and dispatches a live resize event.
+	 * @returns {boolean} whether the sizes actually changed
+	 */
+	#setPairSizes(index, previousShare, measure) {
+		const _ = this;
+		const clamped = Math.min(Math.max(previousShare, measure.minPrevious), measure.maxPrevious);
+		const previousPercent = Math.round(clamped * 100) / 100;
+		const nextPercent = Math.round((measure.pairPercent - previousPercent) * 100) / 100;
+		if (previousPercent === _.#sizes[index] && nextPercent === _.#sizes[index + 1]) return false;
+		_.#sizes[index] = previousPercent;
+		_.#sizes[index + 1] = nextPercent;
+		_.#applySizes();
+		_.#dispatch('split-panel:resize', { sizes: _.sizes, divider: index });
+		return true;
+	}
+
+	// redistribute the pair's current total in the pair's initial ratio — a
+	// pair-local reset that keeps the full array summing to 100 even after
+	// other dividers have moved
+	#resetPair(index) {
+		const _ = this;
+		const pairPercent = _.#sizes[index] + _.#sizes[index + 1];
+		const initialPair = _.#initialSizes[index] + _.#initialSizes[index + 1];
+		if (initialPair <= 0) return;
+		const previousPercent =
+			Math.round((_.#initialSizes[index] / initialPair) * pairPercent * 100) / 100;
+		_.#sizes[index] = previousPercent;
+		_.#sizes[index + 1] = Math.round((pairPercent - previousPercent) * 100) / 100;
+		_.#applySizes();
+		_.#dispatch('split-panel:resize', { sizes: _.sizes, divider: index });
+		_.#commit(index);
+	}
+
+	#restoreSavedSizes() {
+		if (!this.id) return;
+		try {
+			const saved = JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}${this.id}`));
+			const valid =
+				Array.isArray(saved) &&
+				saved.length === this.#panels.length &&
+				saved.every((size) => Number.isFinite(size) && size >= 0);
+			if (valid) this.#sizes = this.#normalizeSizes(saved);
+		} catch {
+			// localStorage unavailable or corrupted — keep initial sizes
+		}
+	}
+
+	#persist() {
+		if (!this.id) return;
+		try {
+			localStorage.setItem(`${STORAGE_PREFIX}${this.id}`, JSON.stringify(this.#sizes));
+		} catch {
+			// localStorage unavailable — persistence is best-effort
+		}
+	}
+
+	#commit(dividerIndex) {
+		this.#dispatch('split-panel:resize-end', { sizes: this.sizes, divider: dividerIndex });
+		this.#persist();
+	}
+
+	#dispatch(type, detail) {
+		this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true }));
+	}
+
+	// resolves an event to one of this group's own dividers — the parentElement
+	// check keeps nested groups from driving each other's panels
+	#resolveDivider(event) {
+		const divider = event.target.closest?.('split-divider');
+		if (!divider || divider.parentElement !== this) return null;
+		if (this.disabled || divider.hasAttribute('disabled')) return null;
+		return divider;
+	}
+
+	#handlePointerDown(e) {
+		const _ = this;
+		const divider = _.#resolveDivider(e);
+		if (!divider || _.#drag) return;
+		if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+		const index = _.#dividers.indexOf(divider);
+		const measure = _.#measurePair(index);
+		if (!measure) return;
+
+		_.#drag = {
+			pointerId: e.pointerId,
+			divider,
+			index,
+			startCoordinate: _.direction === 'vertical' ? e.clientY : e.clientX,
+			startShare: _.#sizes[index],
+			startSizes: [_.#sizes[index], _.#sizes[index + 1]],
+			measure,
+		};
+		_.setAttribute('dragging', '');
+		_.#capturePointer(divider, e);
+	}
+
+	// capture on the divider (not the group) so the composed click/dblclick
+	// events still target it — capture retargets those too
+	#capturePointer(divider, e) {
+		// touch has implicit capture; explicit re-capture fires spurious
+		// pointercancel on some mobile engines
+		if (e.pointerType === 'touch') return;
+		try {
+			divider.setPointerCapture(e.pointerId);
+		} catch {
+			// capture is best-effort
+		}
+	}
+
+	#handlePointerMove(e) {
+		const _ = this;
+		const drag = _.#drag;
+		if (!drag || e.pointerId !== drag.pointerId) return;
+		if (e.pointerType === 'mouse' && e.buttons === 0) {
+			// missed pointerup (e.g. released outside a frame) — self-heal
+			_.#handlePointerEnd(e);
+			return;
+		}
+		const coordinate = _.direction === 'vertical' ? e.clientY : e.clientX;
+		const deltaShare =
+			((coordinate - drag.startCoordinate) * 100) / drag.measure.flexSpace;
+		_.#setPairSizes(drag.index, drag.startShare + deltaShare, drag.measure);
+	}
+
+	#handlePointerEnd(e) {
+		const _ = this;
+		const drag = _.#drag;
+		if (!drag || e.pointerId !== drag.pointerId) return;
+		_.#drag = null;
+		_.removeAttribute('dragging');
+		try {
+			if (drag.divider.hasPointerCapture?.(e.pointerId)) {
+				drag.divider.releasePointerCapture(e.pointerId);
+			}
+		} catch {
+			// release is best-effort
+		}
+		const moved =
+			_.#sizes[drag.index] !== drag.startSizes[0] ||
+			_.#sizes[drag.index + 1] !== drag.startSizes[1];
+		if (!moved) return;
+		// [dragging] is already off, so snapping/settling eases if animation is on
+		const snapped = _.#snapShare(drag.index, drag.measure);
+		if (snapped !== null) _.#setPairSizes(drag.index, snapped, drag.measure);
+		_.#commit(drag.index);
+	}
+
+	// On release, settle the divider onto the nearest `snap` point. Points are
+	// percentages of the divider's travel (0 = previous panel at its minimum,
+	// 100 = at its maximum); bare `snap` defaults to 0/50/100. Returns the
+	// snapped share, or null when snapping is off or there is no travel.
+	#snapShare(index, measure) {
+		const raw = this.getAttribute('snap');
+		if (raw === null) return null;
+		const parsed = raw
+			.split(/[\s,]+/)
+			.map(Number)
+			.filter((point) => Number.isFinite(point) && point >= 0 && point <= 100);
+		const points = parsed.length ? parsed : [0, 50, 100];
+		const travel = measure.maxPrevious - measure.minPrevious;
+		if (travel <= 0) return null;
+		const fraction = ((this.#sizes[index] - measure.minPrevious) / travel) * 100;
+		const nearest = points.reduce((best, point) =>
+			Math.abs(point - fraction) < Math.abs(best - fraction) ? point : best
+		);
+		return measure.minPrevious + (nearest / 100) * travel;
+	}
+
+	#handleDoubleClick(e) {
+		const divider = this.#resolveDivider(e);
+		if (!divider) return;
+		this.#resetPair(this.#dividers.indexOf(divider));
+	}
+
+	#handleKeyDown(e) {
+		const _ = this;
+		const divider = _.#resolveDivider(e);
+		if (!divider) return;
+
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			_.#resetPair(_.#dividers.indexOf(divider));
+			return;
+		}
+
+		const index = _.#dividers.indexOf(divider);
+		const measure = _.#measurePair(index);
+		if (!measure) return;
+
+		const vertical = _.direction === 'vertical';
+		const step = e.shiftKey ? 10 : 1;
+		let targetShare;
+		switch (e.key) {
+			case vertical ? 'ArrowUp' : 'ArrowLeft':
+				targetShare = _.#sizes[index] - step;
+				break;
+			case vertical ? 'ArrowDown' : 'ArrowRight':
+				targetShare = _.#sizes[index] + step;
+				break;
+			case 'Home':
+				targetShare = measure.minPrevious;
+				break;
+			case 'End':
+				targetShare = measure.maxPrevious;
+				break;
+			default:
+				return;
+		}
+		e.preventDefault();
+		if (_.#setPairSizes(index, targetShare, measure)) {
+			_.#commit(index);
+		}
+	}
+}
+
+if (!customElements.get('split-panel-group')) {
+	customElements.define('split-panel-group', SplitPanelGroup);
+}

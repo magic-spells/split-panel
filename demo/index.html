@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Split Panel — @magic-spells</title>
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Outfit:wght@200;300;400;500&display=swap"
+			rel="stylesheet" />
+		<link rel="stylesheet" href="dist/split-panel.min.css" />
+
+		<style>
+			:root {
+				--bg-deep: #07060b;
+				--bg-card: #0f0e14;
+				--bg-card-hover: #15141c;
+				--border: #1e1c28;
+				--border-accent: #2a2636;
+				--gold: #c9a84c;
+				--gold-dim: #8a7233;
+				--gold-glow: rgba(201, 168, 76, 0.12);
+				--cream: #f6f2e8;
+				--cream-dim: #b8b1a2;
+				--text: #ebe7dc;
+				--text-dim: #6b665c;
+				--font-display: 'Cormorant Garamond', Georgia, serif;
+				--font-body: 'Outfit', system-ui, sans-serif;
+			}
+
+			* {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			html {
+				scroll-behavior: smooth;
+				background: var(--bg-deep);
+			}
+
+			body {
+				font-family: var(--font-body);
+				font-weight: 300;
+				color: var(--text);
+				background: var(--bg-deep);
+				overflow-x: hidden;
+				-webkit-font-smoothing: antialiased;
+			}
+
+			.page {
+				position: relative;
+				overflow: hidden;
+			}
+
+			/* ---- Noise overlay ---- */
+			body::before {
+				content: '';
+				position: fixed;
+				inset: 0;
+				z-index: 9999;
+				pointer-events: none;
+				opacity: 0.025;
+				background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+				background-repeat: repeat;
+				background-size: 256px;
+			}
+
+			/* ---- Hero ---- */
+			.hero {
+				position: relative;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				padding: 6rem 2rem 3rem;
+				text-align: center;
+				overflow: hidden;
+			}
+
+			.hero::before {
+				content: '';
+				position: absolute;
+				top: -40%;
+				left: 50%;
+				transform: translateX(-50%);
+				width: 900px;
+				height: 900px;
+				max-width: 90%;
+				max-height: 90%;
+				background: radial-gradient(ellipse, var(--gold-glow) 0%, transparent 70%);
+				pointer-events: none;
+			}
+
+			.hero-badge {
+				font-family: var(--font-body);
+				font-weight: 400;
+				font-size: 0.7rem;
+				letter-spacing: 0.25em;
+				text-transform: uppercase;
+				color: var(--gold);
+				border: 1px solid var(--border-accent);
+				padding: 0.4em 1.4em;
+				border-radius: 100px;
+				margin-bottom: 2.5rem;
+				text-decoration: none;
+				transition:
+					border-color 0.3s ease,
+					color 0.3s ease;
+			}
+
+			.hero-badge:hover {
+				border-color: var(--gold-dim);
+				color: var(--cream);
+			}
+
+			.hero h1 {
+				font-family: var(--font-display);
+				font-weight: 300;
+				font-size: clamp(3rem, 9vw, 7rem);
+				line-height: 1.05;
+				color: var(--cream);
+				letter-spacing: -0.02em;
+				margin-bottom: 1.75rem;
+			}
+
+			.hero h1 em {
+				font-style: italic;
+				color: var(--gold);
+			}
+
+			.hero-tagline {
+				max-width: 540px;
+				font-size: 1.05rem;
+				line-height: 1.7;
+				color: var(--text);
+				text-wrap: pretty;
+			}
+
+			/* ---- Install specs ---- */
+			.install-specs {
+				display: flex;
+				justify-content: center;
+				gap: 2.5rem;
+				flex-wrap: wrap;
+				margin: 3rem auto 0;
+				max-width: 680px;
+			}
+
+			.install-item {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 0.4rem;
+			}
+
+			.install-label {
+				font-size: 0.65rem;
+				font-weight: 400;
+				letter-spacing: 0.18em;
+				text-transform: uppercase;
+				color: var(--text-dim);
+			}
+
+			.install-value {
+				font-family: 'Courier New', monospace;
+				font-size: 0.88rem;
+				color: var(--cream);
+				background: var(--bg-card);
+				border: 1px solid var(--border);
+				border-radius: 8px;
+				padding: 0.5em 1.2em;
+				user-select: all;
+				cursor: copy;
+				transition: border-color 0.3s ease;
+			}
+
+			.install-value:hover {
+				border-color: var(--gold-dim);
+			}
+
+			.install-size {
+				font-family: 'Courier New', monospace;
+				font-size: 0.88rem;
+				color: var(--gold);
+				padding: 0.5em 0;
+			}
+
+			/* ---- Sections ---- */
+			.demos {
+				max-width: 940px;
+				margin: 0 auto;
+				padding: 5rem 1.5rem 8rem;
+				display: flex;
+				flex-direction: column;
+				gap: 2.5rem;
+			}
+
+			.demo-section {
+				position: relative;
+				background: var(--bg-card);
+				border: 1px solid var(--border);
+				border-radius: 16px;
+				padding: 2.5rem;
+				transition:
+					border-color 0.4s ease,
+					background 0.4s ease;
+			}
+
+			.demo-section:hover {
+				border-color: var(--border-accent);
+				background: var(--bg-card-hover);
+			}
+
+			.demo-section h2 {
+				font-family: var(--font-display);
+				font-weight: 400;
+				font-size: clamp(1.75rem, 4vw, 2.5rem);
+				line-height: 1.1;
+				color: var(--cream);
+				letter-spacing: -0.01em;
+				margin-bottom: 0.75rem;
+			}
+
+			.demo-section h2 em {
+				font-style: italic;
+				color: var(--gold);
+			}
+
+			.demo-desc {
+				font-size: 0.98rem;
+				color: var(--text);
+				line-height: 1.7;
+				margin-bottom: 2rem;
+				max-width: 620px;
+			}
+
+			.demo-desc code {
+				font-family: 'Courier New', monospace;
+				font-size: 0.85em;
+				color: var(--gold);
+				background: rgba(0, 0, 0, 0.3);
+				padding: 0.1em 0.4em;
+				border-radius: 4px;
+			}
+
+			.demo-desc strong {
+				color: var(--cream);
+				font-weight: 500;
+			}
+
+			.demo-stage {
+				display: block;
+				background: linear-gradient(
+					135deg,
+					rgba(255, 255, 255, 0.01) 0%,
+					rgba(255, 255, 255, 0.03) 100%
+				);
+				border: 1px solid var(--border);
+				border-radius: 12px;
+				padding: 1rem;
+				height: 18rem;
+			}
+
+			.demo-stage.tall {
+				height: 26rem;
+			}
+
+			.demo-controls {
+				display: flex;
+				align-items: center;
+				gap: 1rem;
+				flex-wrap: wrap;
+				margin-top: 1.25rem;
+			}
+
+			.btn {
+				font-family: var(--font-body);
+				font-weight: 400;
+				font-size: 0.7rem;
+				letter-spacing: 0.18em;
+				text-transform: uppercase;
+				color: var(--cream);
+				background: transparent;
+				border: 1px solid var(--border-accent);
+				padding: 0.7em 1.6em;
+				border-radius: 100px;
+				cursor: pointer;
+				transition: all 0.3s ease;
+			}
+
+			.btn:hover {
+				border-color: var(--gold-dim);
+				color: var(--gold);
+				box-shadow: 0 0 20px rgba(201, 168, 76, 0.1);
+			}
+
+			.toggle-label {
+				display: flex;
+				align-items: center;
+				gap: 0.6rem;
+				font-size: 0.8rem;
+				letter-spacing: 0.08em;
+				text-transform: uppercase;
+				color: var(--cream-dim);
+				cursor: pointer;
+			}
+
+			.toggle-label input {
+				accent-color: var(--gold);
+			}
+
+			.hint {
+				font-size: 0.85rem;
+				color: var(--text-dim);
+				margin-top: 1.25rem;
+			}
+
+			/* ---- Split panel theming for the dark page ---- */
+			split-panel-group {
+				--split-panel-gap: 0.75rem;
+				--split-panel-divider-color: #3a3548;
+				--split-panel-divider-hover-color: #8a7233;
+				--split-panel-divider-active-color: #c9a84c;
+				--split-panel-focus-ring-color: #c9a84c;
+				/* short, centered pill handle instead of a full-length line */
+				--split-panel-divider-length: 2.5rem;
+				--split-panel-divider-line: 0.3rem;
+				--split-panel-divider-radius: 1rem;
+			}
+
+			split-panel {
+				background: var(--bg-card);
+				border: 1px solid var(--border);
+				border-radius: 8px;
+				padding: 1.25rem;
+			}
+
+			/* panels that host a nested group are pure containers */
+			split-panel:has(> split-panel-group) {
+				background: transparent;
+				border: none;
+				padding: 0;
+				overflow: hidden;
+			}
+
+			.panel-label {
+				font-size: 0.65rem;
+				font-weight: 400;
+				letter-spacing: 0.18em;
+				text-transform: uppercase;
+				color: var(--text-dim);
+				margin-bottom: 0.5rem;
+			}
+
+			.panel-note {
+				font-size: 0.85rem;
+				line-height: 1.6;
+				color: var(--cream-dim);
+			}
+
+			/* ---- Fade-to-hidden demo ---- */
+			/* the panel + its content read --split-panel-visible (1 at max, 0 at min) */
+			/* padding lives on the inner content so the panel can collapse to nothing */
+			.fader {
+				padding: 0;
+				overflow: hidden;
+				background: rgba(15, 14, 20, var(--split-panel-visible, 1));
+				border-color: rgba(30, 28, 40, var(--split-panel-visible, 1));
+			}
+
+			.fade-content {
+				width: max-content;
+				padding: 1.25rem;
+				transform-origin: left center;
+				opacity: var(--split-panel-visible, 1);
+				transform: scale(calc(0.8 + 0.2 * var(--split-panel-visible, 1)));
+				filter: blur(calc((1 - var(--split-panel-visible, 1)) * 6px));
+			}
+
+			/* ease programmatic + snap size changes (dragging stays instant) */
+			.snap-demo,
+			#api-group {
+				--split-panel-animate-duration: 320ms;
+			}
+
+			/* ---- Event log ---- */
+			.event-log {
+				font-family: 'Courier New', monospace;
+				font-size: 0.75rem;
+				line-height: 1.6;
+				color: var(--cream-dim);
+				background: rgba(0, 0, 0, 0.35);
+				border: 1px solid var(--border);
+				border-radius: 12px;
+				padding: 1.25rem 1.5rem;
+				max-height: 14rem;
+				overflow-y: auto;
+				white-space: pre-wrap;
+				margin-top: 1.25rem;
+			}
+
+			.event-log:empty::before {
+				content: 'Drag a divider above to see events…';
+				color: var(--text-dim);
+			}
+
+			/* ---- Footer ---- */
+			.footer {
+				text-align: center;
+				padding: 3rem 1.5rem 5rem;
+				color: var(--text-dim);
+				font-size: 0.8rem;
+				letter-spacing: 0.05em;
+			}
+
+			@media (max-width: 640px) {
+				.demo-section {
+					padding: 1.5rem;
+				}
+
+				.demo-stage {
+					padding: 0.75rem;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<div class="page">
+			<header class="hero">
+				<a
+					class="hero-badge"
+					href="https://github.com/magic-spells/split-panel"
+					target="_blank"
+					rel="noopener"
+					>@magic-spells / split-panel</a
+				>
+				<h1>Split the <em>view</em>.</h1>
+				<p class="hero-tagline">
+					Draggable, keyboard-accessible resizable panels — horizontal or vertical, nested to any
+					depth, with min/max constraints and layouts that remember themselves.
+				</p>
+
+				<div class="install-specs">
+					<div class="install-item">
+						<span class="install-label">Install</span>
+						<span class="install-value">npm i @magic-spells/split-panel</span>
+					</div>
+					<div class="install-item">
+						<span class="install-label">Size</span>
+						<span class="install-size" id="bundle-size">3.2 kB min+gzip · 0 deps</span>
+					</div>
+				</div>
+			</header>
+
+			<main class="demos">
+				<section class="demo-section">
+					<h2>Basic <em>split</em></h2>
+					<p class="demo-desc">
+						Two panels with authored starting sizes. <code>size</code> takes a percent
+						(<code>30</code> or <code>30%</code>) or a pixel value (<code>250px</code>). The divider
+						between them is generated automatically. Drag it, or focus it and use the arrow keys
+						(<strong>Shift</strong> for bigger steps, <strong>Enter</strong> or double-click to
+						reset).
+					</p>
+					<div class="demo-stage">
+						<split-panel-group>
+							<split-panel size="30%">
+								<p class="panel-label">Panel 1 · size="30%"</p>
+								<p class="panel-note">Thirty percent to start.</p>
+							</split-panel>
+							<split-panel size="70%">
+								<p class="panel-label">Panel 2 · size="70%"</p>
+								<p class="panel-note">Seventy percent to start.</p>
+							</split-panel>
+						</split-panel-group>
+					</div>
+				</section>
+
+				<section class="demo-section">
+					<h2>Vertical <em>stack</em></h2>
+					<p class="demo-desc">
+						<code>direction="vertical"</code> stacks panels into rows — the divider becomes
+						horizontal and drags up and down. Panels without a <code>size</code> split the space
+						equally.
+					</p>
+					<div class="demo-stage">
+						<split-panel-group direction="vertical">
+							<split-panel>
+								<p class="panel-label">Top</p>
+							</split-panel>
+							<split-panel>
+								<p class="panel-label">Bottom</p>
+							</split-panel>
+						</split-panel-group>
+					</div>
+				</section>
+
+				<section class="demo-section">
+					<h2>Nested <em>layouts</em></h2>
+					<p class="demo-desc">
+						A panel can contain another group. Here the right column holds a
+						<code>direction="vertical"</code> group — each group only manages its own direct
+						children, so the dividers never interfere with each other.
+					</p>
+					<div class="demo-stage tall">
+						<split-panel-group>
+							<split-panel size="35" min="160px">
+								<p class="panel-label">Sidebar</p>
+								<p class="panel-note">One column on the left.</p>
+							</split-panel>
+							<split-panel size="65">
+								<split-panel-group direction="vertical">
+									<split-panel size="60">
+										<p class="panel-label">Editor</p>
+										<p class="panel-note">The right column is its own vertical group.</p>
+									</split-panel>
+									<split-panel size="40">
+										<p class="panel-label">Console</p>
+									</split-panel>
+								</split-panel-group>
+							</split-panel>
+						</split-panel-group>
+					</div>
+				</section>
+
+				<section class="demo-section">
+					<h2>Min &amp; max <em>limits</em></h2>
+					<p class="demo-desc">
+						Constraints accept pixels or percentages. The sidebar is clamped between
+						<code>min="200px"</code> and <code>max="50%"</code>, and the inspector never shrinks
+						below <code>min="15%"</code> — dividers hard-stop at the limits, and the pixel minimum
+						holds even when the window shrinks.
+					</p>
+					<div class="demo-stage">
+						<split-panel-group>
+							<split-panel size="25" min="200px" max="50%">
+								<p class="panel-label">Sidebar · 200px–50%</p>
+							</split-panel>
+							<split-panel size="50">
+								<p class="panel-label">Main</p>
+							</split-panel>
+							<split-panel size="25" min="15%">
+								<p class="panel-label">Inspector · min 15%</p>
+							</split-panel>
+						</split-panel-group>
+					</div>
+				</section>
+
+				<section class="demo-section">
+					<h2>Fade to <em>hidden</em></h2>
+					<p class="demo-desc">
+						The left panel starts at <code>size="250px"</code> (its <code>max</code>) and exposes
+						<code>--split-panel-visible</code> — a <code>1</code>→<code>0</code> readout of where it
+						sits in its <code>min="0px" max="250px"</code> range, driving the scale/blur/fade. With
+						<code>snap="0 100"</code> and an eased transition, releasing the drag settles it to fully
+						hidden or fully open — whichever is nearer.
+					</p>
+					<div class="demo-stage">
+						<split-panel-group class="snap-demo" snap="0 100">
+							<split-panel class="fader" size="250px" min="0px" max="250px">
+								<div class="fade-content">
+									<p class="panel-label">Fading</p>
+									<p class="panel-note">Drag, then release.</p>
+								</div>
+							</split-panel>
+							<split-panel>
+								<p class="panel-label">Cover</p>
+							</split-panel>
+						</split-panel-group>
+					</div>
+				</section>
+
+				<section class="demo-section">
+					<h2>Saved <em>positions</em></h2>
+					<p class="demo-desc">
+						Give a group an <code>id</code> and it persists its sizes to
+						<code>localStorage</code> on every committed change. Drag a divider, reload the page —
+						the layout comes back.
+					</p>
+					<div class="demo-stage">
+						<split-panel-group id="demo-layout">
+							<split-panel size="40">
+								<p class="panel-label">Remembered</p>
+								<p class="panel-note">Stored under <code>split-panel:demo-layout</code>.</p>
+							</split-panel>
+							<split-panel size="60">
+								<p class="panel-label">Also remembered</p>
+							</split-panel>
+						</split-panel-group>
+					</div>
+					<div class="demo-controls">
+						<button type="button" class="btn" data-action-reset>Reset layout</button>
+					</div>
+				</section>
+
+				<section class="demo-section">
+					<h2>Events &amp; <em>API</em></h2>
+					<p class="demo-desc">
+						Dragging fires a light <code>split-panel:resize</code> stream and a single
+						<code>split-panel:resize-end</code> per gesture. The group also exposes
+						<code>setSizes()</code>, <code>resetSizes()</code>, and a <code>disabled</code> lock.
+						This group has an eased transition, so the <code>setSizes()</code> buttons glide.
+					</p>
+					<div class="demo-stage">
+						<split-panel-group id="api-group">
+							<split-panel size="50">
+								<p class="panel-label">A</p>
+							</split-panel>
+							<split-panel size="50">
+								<p class="panel-label">B</p>
+							</split-panel>
+						</split-panel-group>
+					</div>
+					<div class="demo-controls">
+						<button type="button" class="btn" data-action-sizes="25,75">setSizes([25, 75])</button>
+						<button type="button" class="btn" data-action-sizes="50,50">setSizes([50, 50])</button>
+						<label class="toggle-label">
+							<input type="checkbox" data-action-disable />
+							Disabled
+						</label>
+					</div>
+					<pre id="event-log" class="event-log"></pre>
+				</section>
+			</main>
+
+			<footer class="footer">Magic Spells · Released under the MIT License</footer>
+		</div>
+
+		<script type="module" src="dist/split-panel.esm.js"></script>
+		<script type="module">
+			const eventLog = document.getElementById('event-log');
+			const apiGroup = document.getElementById('api-group');
+			let history = '';
+			let liveLine = '';
+
+			function renderLog() {
+				eventLog.textContent = (liveLine ? `${liveLine}\n` : '') + history;
+			}
+
+			document.addEventListener('split-panel:resize', (event) => {
+				liveLine = `split-panel:resize      ${JSON.stringify(event.detail)}`;
+				renderLog();
+			});
+
+			document.addEventListener('split-panel:resize-end', (event) => {
+				liveLine = '';
+				history = `split-panel:resize-end  ${JSON.stringify(event.detail)}\n${history}`.slice(
+					0,
+					4000
+				);
+				renderLog();
+			});
+
+			document.querySelector('[data-action-reset]').addEventListener('click', () => {
+				document.getElementById('demo-layout').resetSizes();
+			});
+
+			for (const button of document.querySelectorAll('[data-action-sizes]')) {
+				button.addEventListener('click', () => {
+					apiGroup.setSizes(button.dataset.actionSizes.split(',').map(Number));
+				});
+			}
+
+			document.querySelector('[data-action-disable]').addEventListener('change', (event) => {
+				apiGroup.disabled = event.target.checked;
+			});
+		</script>
+	</body>
+</html>
