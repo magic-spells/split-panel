@@ -1,6 +1,6 @@
 {
 	"name": "@magic-spells/split-panel",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Resizable split panel web component — draggable dividers, horizontal/vertical splits, nesting, min/max constraints, localStorage persistence, no dependencies",
 	"author": "Cory Schulz",
 	"license": "MIT",
