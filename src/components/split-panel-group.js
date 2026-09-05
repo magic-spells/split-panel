@@ -137,13 +137,26 @@ export class SplitPanelGroup extends HTMLElement {
 	}
 
 	#init() {
+		const previousPanels = this.#panels;
+		const previousSizes = this.#sizes;
 		if (!this.isConnected) return;
 		this.#observeChildren();
 		this.#syncStructure();
 		// no panels yet — stay uninitialized; the child observer retries when some arrive
 		if (this.#panels.length === 0) return;
-		this.#resolveInitialSizes();
-		this.#restoreSavedSizes();
+
+		// Frameworks move nodes: a group that is re-connected with the very same
+		// panels is not a new layout, so its committed sizes stand. Only a first
+		// connect or a changed panel set re-resolves the authored/saved sizes.
+		const sameLayout =
+			previousSizes.length === this.#panels.length &&
+			this.#panels.every((panel, index) => panel === previousPanels[index]);
+		if (sameLayout) {
+			this.#sizes = [...previousSizes];
+		} else {
+			this.#resolveInitialSizes();
+			this.#restoreSavedSizes();
+		}
 		this.#syncOrientation();
 		this.#syncDisabled();
 		this.#mirrorConstraints();
@@ -314,13 +327,17 @@ export class SplitPanelGroup extends HTMLElement {
 
 	// Re-reads the structure after a child mutation, keeping committed sizes for
 	// every panel that is still here (matched by element identity) and giving a
-	// newly added panel its authored share. The array is renormalized to 100.
+	// newly added panel its authored share (or an equal one when it has no
+	// `size`). A structural change during a drag ENDS the drag: the gesture's
+	// index and measured bounds describe a layout that no longer exists.
 	#rescan() {
 		const _ = this;
 		const committed = new Map(_.#panels.map((panel, index) => [panel, _.#sizes[index]]));
 		_.#syncStructure();
 
-		if (_.#drag && !_.#dividers.includes(_.#drag.divider)) {
+		// dropped when the dragged divider went away, or when it now sits between
+		// a different pair — either way its index and measure are stale
+		if (_.#drag && _.#dividers.indexOf(_.#drag.divider) !== _.#drag.index) {
 			_.#drag = null;
 			_.removeAttribute('dragging');
 		}
@@ -330,18 +347,106 @@ export class SplitPanelGroup extends HTMLElement {
 			return;
 		}
 
-		// #resolveInitialSizes seeds #sizes from the authored attributes — that is
-		// exactly what a brand-new panel should get; kept panels keep their own
+		// #resolveInitialSizes re-reads the authored attributes (and reseeds
+		// #initialSizes, which `resetSizes` and double-click restore to)
 		_.#resolveInitialSizes();
-		_.#sizes = _.#normalizeSizes(
-			_.#panels.map((panel, index) => committed.get(panel) ?? _.#sizes[index])
-		);
+		_.#sizes = _.#clampSizes(_.#mergeSizes(committed));
 
 		_.#syncOrientation();
 		_.#syncDisabled();
 		_.#mirrorConstraints();
-		_.#applySizes();
+		// a live drag owns the rendered sizes — writing here would discard the
+		// in-flight delta; the next pointermove renders
+		if (!_.#drag) _.#applySizes();
 		_.#trackVisible();
+	}
+
+	// Merges committed sizes (by element identity) with the shares for panels
+	// that are new. A new panel's share is read at FULL scale — an authored
+	// `size="25"` means 25% of the whole once the others make room, not 25% of
+	// a slice that then gets normalized again — and an unsized new panel takes
+	// an equal share (100 / panel count). The panels that stayed are scaled
+	// proportionally into whatever is left.
+	#mergeSizes(committed) {
+		const _ = this;
+		const equalShare = 100 / _.#panels.length;
+		const fresh = _.#panels.map((panel) =>
+			committed.has(panel) ? null : (_.#authoredShare(panel) ?? equalShare)
+		);
+		const freshTotal = fresh.reduce((total, size) => total + (size ?? 0), 0);
+		const keptTotal = _.#panels.reduce((total, panel) => total + (committed.get(panel) ?? 0), 0);
+		// nothing new, or the new panels alone claim everything — fall back to a
+		// plain normalization of what we have
+		if (freshTotal <= 0 || freshTotal >= 100 || keptTotal <= 0) {
+			return _.#normalizeSizes(
+				_.#panels.map((panel, index) => committed.get(panel) ?? fresh[index] ?? 0)
+			);
+		}
+		const keptScale = (100 - freshTotal) / keptTotal;
+		return _.#panels.map((panel, index) =>
+			fresh[index] === null
+				? Math.round(committed.get(panel) * keptScale * 100) / 100
+				: Math.round(fresh[index] * 100) / 100
+		);
+	}
+
+	// A panel's authored `size` as a percent of the WHOLE — unnormalized, which
+	// is what a panel arriving into a settled layout should claim. Percent forms
+	// pass straight through; a px form maps through the distributable space, the
+	// same basis #resolveInitialSizes and the drag math use.
+	#authoredShare(panel) {
+		const raw = panel.getAttribute('size');
+		if (!raw) return null;
+		if (!raw.trim().endsWith('px')) return this.#parseSize(raw, 0, 0);
+		const horizontal = this.direction === 'horizontal';
+		const dimension = horizontal ? 'width' : 'height';
+		const freeGrow = this.#panels.reduce(
+			(total, item) =>
+				total + item.getBoundingClientRect()[dimension] - this.#panelExtra(item, horizontal),
+			0
+		);
+		return this.#parseSize(raw, this.#panelExtra(panel, horizontal), freeGrow);
+	}
+
+	// Pulls a sizes array inside every panel's min/max, in the same percent
+	// domain the drag math uses, then hands the leftover to the panels that
+	// still have room. Without this a panel can hold a model size its `min`
+	// will not render, and every neighbour calculation is skewed by the gap.
+	#clampSizes(sizes) {
+		const _ = this;
+		const horizontal = _.direction === 'horizontal';
+		const dimension = horizontal ? 'width' : 'height';
+		const flexSpace = _.#panels.reduce(
+			(total, panel) =>
+				total + panel.getBoundingClientRect()[dimension] - _.#panelExtra(panel, horizontal),
+			0
+		);
+		if (flexSpace <= 0) return sizes;
+
+		const bounds = _.#panels.map((panel) => {
+			const extra = _.#panelExtra(panel, horizontal);
+			return {
+				min: Math.max(0, _.#parseConstraint(panel.getAttribute('min'), extra, flexSpace, 0)),
+				max: _.#parseConstraint(panel.getAttribute('max'), extra, flexSpace, Infinity),
+			};
+		});
+		const clamp = (size, index) => Math.min(Math.max(size, bounds[index].min), bounds[index].max);
+
+		let result = sizes.map(clamp);
+		// clamping moves the total off 100 — give the difference to the panels
+		// that can still take it, a few passes to settle
+		for (let pass = 0; pass < 4; pass += 1) {
+			const residual = 100 - result.reduce((total, size) => total + size, 0);
+			if (Math.abs(residual) < 0.01) break;
+			const eligible = result.map((size, index) =>
+				residual > 0 ? size < bounds[index].max : size > bounds[index].min
+			);
+			const count = eligible.filter(Boolean).length;
+			if (count === 0) break;
+			const step = residual / count;
+			result = result.map((size, index) => (eligible[index] ? clamp(size + step, index) : size));
+		}
+		return result.map((size) => Math.round(size * 100) / 100);
 	}
 
 	#syncOrientation() {

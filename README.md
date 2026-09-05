@@ -98,6 +98,8 @@ Give a group an `id` and committed sizes persist to localStorage (key `split-pan
 </split-panel-group>
 ```
 
+Saved sizes are stored and restored **by position**, not by panel identity — reorder the panels and reload, and each position gets the size that was committed for that position.
+
 ## Attributes
 
 ### `<split-panel-group>`
@@ -132,6 +134,7 @@ Generated for any adjacent pair you leave one out of; write your own between two
 | `sizes`           | Getter — current sizes as an array of percentages summing to 100               |
 | `setSizes(array)` | Sets sizes programmatically (one number per panel, normalized to 100), commits |
 | `resetSizes()`    | Restores the initial authored sizes                                            |
+| `queryDOM()`      | Re-scans the child structure only (adopt/generate dividers) — sizes are untouched; child changes are picked up automatically, so this is rarely needed |
 | `disabled`        | Getter/setter reflecting the `disabled` attribute                              |
 
 ## Events

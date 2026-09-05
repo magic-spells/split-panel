@@ -110,12 +110,17 @@ var SplitPanelGroup = class extends HTMLElement {
 		_[method]("keydown", _.handlers.keyDown);
 	}
 	#init() {
+		const previousPanels = this.#panels;
+		const previousSizes = this.#sizes;
 		if (!this.isConnected) return;
 		this.#observeChildren();
 		this.#syncStructure();
 		if (this.#panels.length === 0) return;
-		this.#resolveInitialSizes();
-		this.#restoreSavedSizes();
+		if (previousSizes.length === this.#panels.length && this.#panels.every((panel, index) => panel === previousPanels[index])) this.#sizes = [...previousSizes];
+		else {
+			this.#resolveInitialSizes();
+			this.#restoreSavedSizes();
+		}
 		this.#syncOrientation();
 		this.#syncDisabled();
 		this.#mirrorConstraints();
@@ -231,7 +236,7 @@ var SplitPanelGroup = class extends HTMLElement {
 		const _ = this;
 		const committed = new Map(_.#panels.map((panel, index) => [panel, _.#sizes[index]]));
 		_.#syncStructure();
-		if (_.#drag && !_.#dividers.includes(_.#drag.divider)) {
+		if (_.#drag && _.#dividers.indexOf(_.#drag.divider) !== _.#drag.index) {
 			_.#drag = null;
 			_.removeAttribute("dragging");
 		}
@@ -241,12 +246,57 @@ var SplitPanelGroup = class extends HTMLElement {
 			return;
 		}
 		_.#resolveInitialSizes();
-		_.#sizes = _.#normalizeSizes(_.#panels.map((panel, index) => committed.get(panel) ?? _.#sizes[index]));
+		_.#sizes = _.#clampSizes(_.#mergeSizes(committed));
 		_.#syncOrientation();
 		_.#syncDisabled();
 		_.#mirrorConstraints();
-		_.#applySizes();
+		if (!_.#drag) _.#applySizes();
 		_.#trackVisible();
+	}
+	#mergeSizes(committed) {
+		const _ = this;
+		const equalShare = 100 / _.#panels.length;
+		const fresh = _.#panels.map((panel) => committed.has(panel) ? null : _.#authoredShare(panel) ?? equalShare);
+		const freshTotal = fresh.reduce((total, size) => total + (size ?? 0), 0);
+		const keptTotal = _.#panels.reduce((total, panel) => total + (committed.get(panel) ?? 0), 0);
+		if (freshTotal <= 0 || freshTotal >= 100 || keptTotal <= 0) return _.#normalizeSizes(_.#panels.map((panel, index) => committed.get(panel) ?? fresh[index] ?? 0));
+		const keptScale = (100 - freshTotal) / keptTotal;
+		return _.#panels.map((panel, index) => fresh[index] === null ? Math.round(committed.get(panel) * keptScale * 100) / 100 : Math.round(fresh[index] * 100) / 100);
+	}
+	#authoredShare(panel) {
+		const raw = panel.getAttribute("size");
+		if (!raw) return null;
+		if (!raw.trim().endsWith("px")) return this.#parseSize(raw, 0, 0);
+		const horizontal = this.direction === "horizontal";
+		const dimension = horizontal ? "width" : "height";
+		const freeGrow = this.#panels.reduce((total, item) => total + item.getBoundingClientRect()[dimension] - this.#panelExtra(item, horizontal), 0);
+		return this.#parseSize(raw, this.#panelExtra(panel, horizontal), freeGrow);
+	}
+	#clampSizes(sizes) {
+		const _ = this;
+		const horizontal = _.direction === "horizontal";
+		const dimension = horizontal ? "width" : "height";
+		const flexSpace = _.#panels.reduce((total, panel) => total + panel.getBoundingClientRect()[dimension] - _.#panelExtra(panel, horizontal), 0);
+		if (flexSpace <= 0) return sizes;
+		const bounds = _.#panels.map((panel) => {
+			const extra = _.#panelExtra(panel, horizontal);
+			return {
+				min: Math.max(0, _.#parseConstraint(panel.getAttribute("min"), extra, flexSpace, 0)),
+				max: _.#parseConstraint(panel.getAttribute("max"), extra, flexSpace, Infinity)
+			};
+		});
+		const clamp = (size, index) => Math.min(Math.max(size, bounds[index].min), bounds[index].max);
+		let result = sizes.map(clamp);
+		for (let pass = 0; pass < 4; pass += 1) {
+			const residual = 100 - result.reduce((total, size) => total + size, 0);
+			if (Math.abs(residual) < .01) break;
+			const eligible = result.map((size, index) => residual > 0 ? size < bounds[index].max : size > bounds[index].min);
+			const count = eligible.filter(Boolean).length;
+			if (count === 0) break;
+			const step = residual / count;
+			result = result.map((size, index) => eligible[index] ? clamp(size + step, index) : size);
+		}
+		return result.map((size) => Math.round(size * 100) / 100);
 	}
 	#syncOrientation() {
 		const orientation = this.direction === "vertical" ? "horizontal" : "vertical";
