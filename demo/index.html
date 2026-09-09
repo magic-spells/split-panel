@@ -450,7 +450,7 @@
 					</div>
 					<div class="install-item">
 						<span class="install-label">Size</span>
-						<span class="install-size" id="bundle-size">3.2 kB min+gzip · 0 deps</span>
+						<span class="install-size" id="bundle-size">3.7 kB min+gzip · 0 deps</span>
 					</div>
 				</div>
 			</header>
@@ -459,11 +459,14 @@
 				<section class="demo-section">
 					<h2>Basic <em>split</em></h2>
 					<p class="demo-desc">
-						Two panels with authored starting sizes. <code>size</code> takes a percent
-						(<code>30</code> or <code>30%</code>) or a pixel value (<code>250px</code>). The divider
-						between them is generated automatically. Drag it, or focus it and use the arrow keys
-						(<strong>Shift</strong> for bigger steps, <strong>Enter</strong> or double-click to
-						reset).
+						Two panels with authored starting sizes. <code>size</code> takes a percent (<code
+							>30</code
+						>
+						or <code>30%</code>) or a pixel value (<code>250px</code>). The divider between them is
+						generated automatically. Drag it, or focus it and use the arrow keys (<strong
+							>Shift</strong
+						>
+						for bigger steps, <strong>Enter</strong> or double-click to reset).
 					</p>
 					<div class="demo-stage">
 						<split-panel-group>
@@ -477,6 +480,63 @@
 							</split-panel>
 						</split-panel-group>
 					</div>
+				</section>
+
+				<section class="demo-section">
+					<h2>Authored <em>dividers</em></h2>
+					<p class="demo-desc">
+						Dividers are generated where you leave them out — but you can also write a
+						<code>&lt;split-divider&gt;</code> between two panels and the group will
+						<strong>adopt</strong> it, wiring the same drag, keyboard, and ARIA behaviour onto your
+						element instead of replacing it. That is what lets a template or framework own the
+						markup. Here the first divider is authored, the second is generated, and the third is
+						authored with <code>disabled</code> — its handle is hidden and it does not drag.
+					</p>
+					<div class="demo-stage">
+						<split-panel-group>
+							<split-panel size="25">
+								<p class="panel-label">One</p>
+								<p class="panel-note">Authored divider →</p>
+							</split-panel>
+							<split-divider></split-divider>
+							<split-panel size="25">
+								<p class="panel-label">Two</p>
+								<p class="panel-note">Generated divider →</p>
+							</split-panel>
+							<split-panel size="25">
+								<p class="panel-label">Three</p>
+								<p class="panel-note">Authored, disabled →</p>
+							</split-panel>
+							<split-divider disabled></split-divider>
+							<split-panel size="25">
+								<p class="panel-label">Four</p>
+							</split-panel>
+						</split-panel-group>
+					</div>
+				</section>
+
+				<section class="demo-section">
+					<h2>Runtime <em>panels</em></h2>
+					<p class="demo-desc">
+						The group watches its own child list, so panels added, removed, or reordered after mount
+						are re-scanned and re-wired on the next microtask. Sizes renormalize to 100 while every
+						panel that stayed keeps the size it was committed to.
+					</p>
+					<div class="demo-stage">
+						<split-panel-group id="runtime-group">
+							<split-panel size="50">
+								<p class="panel-label">A</p>
+							</split-panel>
+							<split-panel size="50">
+								<p class="panel-label">B</p>
+							</split-panel>
+						</split-panel-group>
+					</div>
+					<div class="demo-controls">
+						<button type="button" class="btn" data-action-add-panel>Append panel</button>
+						<button type="button" class="btn" data-action-remove-panel>Remove middle panel</button>
+					</div>
+					<p class="hint" id="runtime-readout"></p>
 				</section>
 
 				<section class="demo-section">
@@ -555,8 +615,8 @@
 						The left panel starts at <code>size="250px"</code> (its <code>max</code>) and exposes
 						<code>--split-panel-visible</code> — a <code>1</code>→<code>0</code> readout of where it
 						sits in its <code>min="0px" max="250px"</code> range, driving the scale/blur/fade. With
-						<code>snap="0 100"</code> and an eased transition, releasing the drag settles it to fully
-						hidden or fully open — whichever is nearer.
+						<code>snap="0 100"</code> and an eased transition, releasing the drag settles it to
+						fully hidden or fully open — whichever is nearer.
 					</p>
 					<div class="demo-stage">
 						<split-panel-group class="snap-demo" snap="0 100">
@@ -667,6 +727,36 @@
 			document.querySelector('[data-action-disable]').addEventListener('change', (event) => {
 				apiGroup.disabled = event.target.checked;
 			});
+
+			// --- runtime panels ---
+			const runtimeGroup = document.getElementById('runtime-group');
+			const runtimeReadout = document.getElementById('runtime-readout');
+			let nextLetter = 'C'.charCodeAt(0);
+
+			function renderRuntimeReadout() {
+				const panels = runtimeGroup.querySelectorAll(':scope > split-panel').length;
+				const dividers = runtimeGroup.querySelectorAll(':scope > split-divider').length;
+				runtimeReadout.textContent = `${panels} panels · ${dividers} dividers · sizes ${JSON.stringify(runtimeGroup.sizes)}`;
+			}
+
+			document.querySelector('[data-action-add-panel]').addEventListener('click', () => {
+				const panel = document.createElement('split-panel');
+				// an unsized panel takes whatever the authored sizes leave over — give
+				// it a share so it arrives visible
+				panel.setAttribute('size', '25');
+				panel.innerHTML = `<p class="panel-label">${String.fromCharCode(nextLetter++)}</p>`;
+				runtimeGroup.append(panel);
+				queueMicrotask(renderRuntimeReadout);
+			});
+
+			document.querySelector('[data-action-remove-panel]').addEventListener('click', () => {
+				const panels = [...runtimeGroup.querySelectorAll(':scope > split-panel')];
+				if (panels.length < 3) return;
+				panels[Math.floor(panels.length / 2)].remove();
+				queueMicrotask(renderRuntimeReadout);
+			});
+
+			renderRuntimeReadout();
 		</script>
 	</body>
 </html>

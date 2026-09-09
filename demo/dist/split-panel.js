@@ -6,9 +6,13 @@
 	var STORAGE_PREFIX = "split-panel:";
 	/**
 	* Resizable split-panel layout. Lays out direct <split-panel> children along one
-	* axis, generates a draggable <split-divider> between each adjacent pair, and
-	* keeps a sizes array (percent shares summing to 100) as the single source of
-	* truth — rendered by writing `--split-panel-size` on each panel.
+	* axis, adopts any author-supplied <split-divider> sitting between an adjacent
+	* pair (generating one only where none was written), and keeps a sizes array
+	* (percent shares summing to 100) as the single source of truth — rendered by
+	* writing `--split-panel-size` on each panel.
+	*
+	* Structure is re-scanned whenever the group's children change, so panels and
+	* dividers rendered by a framework can come and go at runtime.
 	*
 	* With an `id`, committed sizes persist to localStorage and restore on load.
 	* @class SplitPanelGroup
@@ -23,6 +27,10 @@
 		#drag = null;
 		#initialized = false;
 		#visibleObserver = null;
+		#childObserver = null;
+		#scanning = false;
+		#generated = /* @__PURE__ */ new Set();
+		#labelled = /* @__PURE__ */ new WeakSet();
 		constructor() {
 			super();
 			const _ = this;
@@ -45,6 +53,8 @@
 			this.detachListeners();
 			this.#visibleObserver?.disconnect();
 			this.#visibleObserver = null;
+			this.#childObserver?.disconnect();
+			this.#childObserver = null;
 		}
 		attributeChangedCallback(name, previousValue, currentValue) {
 			if (previousValue === currentValue || !this.#initialized) return;
@@ -83,8 +93,9 @@
 		resetSizes() {
 			this.setSizes([...this.#initialSizes]);
 		}
+		/** Re-reads the group's direct children, adopting or generating dividers. */
 		queryDOM() {
-			this.#panels = [...this.querySelectorAll(":scope > split-panel")];
+			this.#syncStructure();
 		}
 		attachListeners() {
 			this.#toggleListeners("addEventListener");
@@ -103,12 +114,17 @@
 			_[method]("keydown", _.handlers.keyDown);
 		}
 		#init() {
+			const previousPanels = this.#panels;
+			const previousSizes = this.#sizes;
 			if (!this.isConnected) return;
-			this.queryDOM();
+			this.#observeChildren();
+			this.#syncStructure();
 			if (this.#panels.length === 0) return;
-			this.#createDividers();
-			this.#resolveInitialSizes();
-			this.#restoreSavedSizes();
+			if (previousSizes.length === this.#panels.length && this.#panels.every((panel, index) => panel === previousPanels[index])) this.#sizes = [...previousSizes];
+			else {
+				this.#resolveInitialSizes();
+				this.#restoreSavedSizes();
+			}
 			this.#syncOrientation();
 			this.#syncDisabled();
 			this.#mirrorConstraints();
@@ -148,17 +164,143 @@
 			if (total <= 0) return sizes.map(() => Math.round(1e4 / sizes.length) / 100);
 			return sizes.map((size) => Math.round(size / total * 1e4) / 100);
 		}
-		#createDividers() {
-			for (const divider of this.querySelectorAll(":scope > split-divider")) divider.remove();
-			this.#dividers = this.#panels.slice(0, -1).map((panel, index) => {
-				const divider = document.createElement("split-divider");
-				divider.setAttribute("role", "separator");
-				divider.setAttribute("aria-label", `Resize panels ${index + 1} and ${index + 2}`);
-				divider.setAttribute("aria-valuemin", "0");
-				divider.setAttribute("aria-valuemax", "100");
-				panel.after(divider);
-				return divider;
+		#syncStructure() {
+			const _ = this;
+			_.#scanning = true;
+			const panels = [];
+			const dividers = [];
+			const wired = /* @__PURE__ */ new Set();
+			let pending = null;
+			for (const child of _.children) {
+				const tag = child.localName;
+				if (tag === "split-panel") {
+					if (panels.length > 0) dividers[panels.length - 1] = pending;
+					panels.push(child);
+					pending = null;
+				} else if (tag === "split-divider" && !pending) pending = child;
+			}
+			for (let index = 0; index < panels.length - 1; index += 1) {
+				if (!dividers[index]) {
+					const divider = document.createElement("split-divider");
+					_.#generated.add(divider);
+					panels[index].after(divider);
+					dividers[index] = divider;
+				}
+				_.#wireDivider(dividers[index], index);
+				wired.add(dividers[index]);
+			}
+			for (const divider of [..._.#generated]) {
+				if (wired.has(divider)) continue;
+				_.#generated.delete(divider);
+				divider.remove();
+			}
+			for (const divider of _.#dividers) if (!wired.has(divider) && divider.isConnected) _.#unwireDivider(divider);
+			_.#panels = panels;
+			_.#dividers = dividers.slice(0, Math.max(0, panels.length - 1));
+			_.#childObserver?.takeRecords();
+			_.#scanning = false;
+		}
+		#wireDivider(divider, index) {
+			divider.setAttribute("role", "separator");
+			divider.setAttribute("aria-valuemin", "0");
+			divider.setAttribute("aria-valuemax", "100");
+			if (!this.#labelled.has(divider) && (divider.hasAttribute("aria-label") || divider.hasAttribute("aria-labelledby"))) return;
+			this.#labelled.add(divider);
+			divider.setAttribute("aria-label", `Resize panels ${index + 1} and ${index + 2}`);
+		}
+		#unwireDivider(divider) {
+			for (const name of [
+				"role",
+				"tabindex",
+				"aria-orientation",
+				"aria-valuemin",
+				"aria-valuemax",
+				"aria-valuenow",
+				"aria-disabled"
+			]) divider.removeAttribute(name);
+			if (this.#labelled.has(divider)) {
+				divider.removeAttribute("aria-label");
+				this.#labelled.delete(divider);
+			}
+		}
+		#observeChildren() {
+			if (this.#childObserver) return;
+			this.#childObserver = new MutationObserver(() => this.#handleChildMutation());
+			this.#childObserver.observe(this, { childList: true });
+		}
+		#handleChildMutation() {
+			if (this.#scanning || !this.isConnected) return;
+			if (!this.#initialized) {
+				this.#init();
+				return;
+			}
+			this.#rescan();
+		}
+		#rescan() {
+			const _ = this;
+			const committed = new Map(_.#panels.map((panel, index) => [panel, _.#sizes[index]]));
+			_.#syncStructure();
+			if (_.#drag && _.#dividers.indexOf(_.#drag.divider) !== _.#drag.index) {
+				_.#drag = null;
+				_.removeAttribute("dragging");
+			}
+			if (_.#panels.length === 0) {
+				_.#sizes = [];
+				_.#initialSizes = [];
+				return;
+			}
+			_.#resolveInitialSizes();
+			_.#sizes = _.#clampSizes(_.#mergeSizes(committed));
+			_.#syncOrientation();
+			_.#syncDisabled();
+			_.#mirrorConstraints();
+			if (!_.#drag) _.#applySizes();
+			_.#trackVisible();
+		}
+		#mergeSizes(committed) {
+			const _ = this;
+			const equalShare = 100 / _.#panels.length;
+			const fresh = _.#panels.map((panel) => committed.has(panel) ? null : _.#authoredShare(panel) ?? equalShare);
+			const freshTotal = fresh.reduce((total, size) => total + (size ?? 0), 0);
+			const keptTotal = _.#panels.reduce((total, panel) => total + (committed.get(panel) ?? 0), 0);
+			if (freshTotal <= 0 || freshTotal >= 100 || keptTotal <= 0) return _.#normalizeSizes(_.#panels.map((panel, index) => committed.get(panel) ?? fresh[index] ?? 0));
+			const keptScale = (100 - freshTotal) / keptTotal;
+			return _.#panels.map((panel, index) => fresh[index] === null ? Math.round(committed.get(panel) * keptScale * 100) / 100 : Math.round(fresh[index] * 100) / 100);
+		}
+		#authoredShare(panel) {
+			const raw = panel.getAttribute("size");
+			if (!raw) return null;
+			if (!raw.trim().endsWith("px")) return this.#parseSize(raw, 0, 0);
+			const horizontal = this.direction === "horizontal";
+			const dimension = horizontal ? "width" : "height";
+			const freeGrow = this.#panels.reduce((total, item) => total + item.getBoundingClientRect()[dimension] - this.#panelExtra(item, horizontal), 0);
+			return this.#parseSize(raw, this.#panelExtra(panel, horizontal), freeGrow);
+		}
+		#clampSizes(sizes) {
+			const _ = this;
+			const horizontal = _.direction === "horizontal";
+			const dimension = horizontal ? "width" : "height";
+			const flexSpace = _.#panels.reduce((total, panel) => total + panel.getBoundingClientRect()[dimension] - _.#panelExtra(panel, horizontal), 0);
+			if (flexSpace <= 0) return sizes;
+			const bounds = _.#panels.map((panel) => {
+				const extra = _.#panelExtra(panel, horizontal);
+				return {
+					min: Math.max(0, _.#parseConstraint(panel.getAttribute("min"), extra, flexSpace, 0)),
+					max: _.#parseConstraint(panel.getAttribute("max"), extra, flexSpace, Infinity)
+				};
 			});
+			const clamp = (size, index) => Math.min(Math.max(size, bounds[index].min), bounds[index].max);
+			let result = sizes.map(clamp);
+			for (let pass = 0; pass < 4; pass += 1) {
+				const residual = 100 - result.reduce((total, size) => total + size, 0);
+				if (Math.abs(residual) < .01) break;
+				const eligible = result.map((size, index) => residual > 0 ? size < bounds[index].max : size > bounds[index].min);
+				const count = eligible.filter(Boolean).length;
+				if (count === 0) break;
+				const step = residual / count;
+				result = result.map((size, index) => eligible[index] ? clamp(size + step, index) : size);
+			}
+			return result.map((size) => Math.round(size * 100) / 100);
 		}
 		#syncOrientation() {
 			const orientation = this.direction === "vertical" ? "horizontal" : "vertical";
@@ -325,12 +467,14 @@
 		#dispatch(type, detail) {
 			this.dispatchEvent(new CustomEvent(type, {
 				detail,
-				bubbles: true
+				bubbles: true,
+				composed: true
 			}));
 		}
 		#resolveDivider(event) {
 			const divider = event.target.closest?.("split-divider");
 			if (!divider || divider.parentElement !== this) return null;
+			if (this.#dividers.indexOf(divider) === -1) return null;
 			if (this.disabled || divider.hasAttribute("disabled")) return null;
 			return divider;
 		}
@@ -450,8 +594,9 @@
 	*/
 	var SplitPanel = class extends HTMLElement {};
 	/**
-	* Drag handle between two adjacent panels. Generated automatically by
-	* <split-panel-group> — authors never write it by hand.
+	* Drag handle between two adjacent panels. <split-panel-group> generates one
+	* for any adjacent pair that has none, and adopts — wires, but never moves or
+	* removes — any the author wrote between two panels.
 	* @class SplitDivider
 	* @extends HTMLElement
 	*/

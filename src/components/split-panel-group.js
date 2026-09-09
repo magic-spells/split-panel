@@ -2,9 +2,13 @@ const STORAGE_PREFIX = 'split-panel:';
 
 /**
  * Resizable split-panel layout. Lays out direct <split-panel> children along one
- * axis, generates a draggable <split-divider> between each adjacent pair, and
- * keeps a sizes array (percent shares summing to 100) as the single source of
- * truth — rendered by writing `--split-panel-size` on each panel.
+ * axis, adopts any author-supplied <split-divider> sitting between an adjacent
+ * pair (generating one only where none was written), and keeps a sizes array
+ * (percent shares summing to 100) as the single source of truth — rendered by
+ * writing `--split-panel-size` on each panel.
+ *
+ * Structure is re-scanned whenever the group's children change, so panels and
+ * dividers rendered by a framework can come and go at runtime.
  *
  * With an `id`, committed sizes persist to localStorage and restore on load.
  * @class SplitPanelGroup
@@ -20,6 +24,12 @@ export class SplitPanelGroup extends HTMLElement {
 	#drag = null;
 	#initialized = false;
 	#visibleObserver = null;
+	#childObserver = null;
+	#scanning = false;
+	// dividers this component created (the only ones it may remove) and the ones
+	// it labelled — author-supplied dividers and author labels are never touched
+	#generated = new Set();
+	#labelled = new WeakSet();
 
 	constructor() {
 		super();
@@ -48,6 +58,8 @@ export class SplitPanelGroup extends HTMLElement {
 		this.detachListeners();
 		this.#visibleObserver?.disconnect();
 		this.#visibleObserver = null;
+		this.#childObserver?.disconnect();
+		this.#childObserver = null;
 	}
 
 	attributeChangedCallback(name, previousValue, currentValue) {
@@ -100,8 +112,9 @@ export class SplitPanelGroup extends HTMLElement {
 		this.setSizes([...this.#initialSizes]);
 	}
 
+	/** Re-reads the group's direct children, adopting or generating dividers. */
 	queryDOM() {
-		this.#panels = [...this.querySelectorAll(':scope > split-panel')];
+		this.#syncStructure();
 	}
 
 	attachListeners() {
@@ -124,12 +137,26 @@ export class SplitPanelGroup extends HTMLElement {
 	}
 
 	#init() {
+		const previousPanels = this.#panels;
+		const previousSizes = this.#sizes;
 		if (!this.isConnected) return;
-		this.queryDOM();
+		this.#observeChildren();
+		this.#syncStructure();
+		// no panels yet — stay uninitialized; the child observer retries when some arrive
 		if (this.#panels.length === 0) return;
-		this.#createDividers();
-		this.#resolveInitialSizes();
-		this.#restoreSavedSizes();
+
+		// Frameworks move nodes: a group that is re-connected with the very same
+		// panels is not a new layout, so its committed sizes stand. Only a first
+		// connect or a changed panel set re-resolves the authored/saved sizes.
+		const sameLayout =
+			previousSizes.length === this.#panels.length &&
+			this.#panels.every((panel, index) => panel === previousPanels[index]);
+		if (sameLayout) {
+			this.#sizes = [...previousSizes];
+		} else {
+			this.#resolveInitialSizes();
+			this.#restoreSavedSizes();
+		}
 		this.#syncOrientation();
 		this.#syncDisabled();
 		this.#mirrorConstraints();
@@ -162,7 +189,9 @@ export class SplitPanelGroup extends HTMLElement {
 			freeGrow = panelSpace - extras.reduce((total, extra) => total + extra, 0);
 		}
 
-		const authored = raw.map((value, index) => this.#parseSize(value, extras[index] ?? 0, freeGrow));
+		const authored = raw.map((value, index) =>
+			this.#parseSize(value, extras[index] ?? 0, freeGrow)
+		);
 		const authoredTotal = authored.reduce((total, size) => total + (size ?? 0), 0);
 		const unsizedCount = authored.filter((size) => size === null).length;
 		const share = unsizedCount > 0 ? Math.max(0, 100 - authoredTotal) / unsizedCount : 0;
@@ -188,19 +217,236 @@ export class SplitPanelGroup extends HTMLElement {
 		return sizes.map((size) => Math.round((size / total) * 10000) / 100);
 	}
 
-	#createDividers() {
-		for (const divider of this.querySelectorAll(':scope > split-divider')) {
+	// Reads the group's direct children in document order and pairs each panel
+	// with the divider that follows it. An author-supplied <split-divider>
+	// between two panels is ADOPTED — wired exactly like a generated one, never
+	// removed. A divider is generated only where an adjacent pair has none.
+	// Strays (a divider before the first panel, after the last, or a second one
+	// in a row) are left alone and unwired rather than moved or deleted.
+	#syncStructure() {
+		const _ = this;
+		_.#scanning = true;
+
+		const panels = [];
+		const dividers = [];
+		const wired = new Set();
+		let pending = null;
+
+		for (const child of _.children) {
+			const tag = child.localName;
+			if (tag === 'split-panel') {
+				if (panels.length > 0) dividers[panels.length - 1] = pending;
+				panels.push(child);
+				pending = null;
+			} else if (tag === 'split-divider' && !pending) {
+				// only the first divider after a panel is a candidate; a second
+				// one in a row stays a stray
+				pending = child;
+			}
+		}
+
+		// generate the missing ones — a fresh divider goes directly after its panel
+		for (let index = 0; index < panels.length - 1; index += 1) {
+			if (!dividers[index]) {
+				const divider = document.createElement('split-divider');
+				_.#generated.add(divider);
+				panels[index].after(divider);
+				dividers[index] = divider;
+			}
+			_.#wireDivider(dividers[index], index);
+			wired.add(dividers[index]);
+		}
+
+		// drop dividers this component generated that no longer sit between a
+		// pair (their neighbour panel went away); un-wire adopted ones that
+		// became strays, leaving the element itself in place
+		for (const divider of [..._.#generated]) {
+			if (wired.has(divider)) continue;
+			_.#generated.delete(divider);
 			divider.remove();
 		}
-		this.#dividers = this.#panels.slice(0, -1).map((panel, index) => {
-			const divider = document.createElement('split-divider');
-			divider.setAttribute('role', 'separator');
-			divider.setAttribute('aria-label', `Resize panels ${index + 1} and ${index + 2}`);
-			divider.setAttribute('aria-valuemin', '0');
-			divider.setAttribute('aria-valuemax', '100');
-			panel.after(divider);
-			return divider;
+		for (const divider of _.#dividers) {
+			if (!wired.has(divider) && divider.isConnected) _.#unwireDivider(divider);
+		}
+
+		_.#panels = panels;
+		_.#dividers = dividers.slice(0, Math.max(0, panels.length - 1));
+		// discard the records our own insertions/removals just queued
+		_.#childObserver?.takeRecords();
+		_.#scanning = false;
+	}
+
+	#wireDivider(divider, index) {
+		divider.setAttribute('role', 'separator');
+		divider.setAttribute('aria-valuemin', '0');
+		divider.setAttribute('aria-valuemax', '100');
+		// respect an author's own accessible name; only ever rewrite our own
+		const authorNamed =
+			!this.#labelled.has(divider) &&
+			(divider.hasAttribute('aria-label') || divider.hasAttribute('aria-labelledby'));
+		if (authorNamed) return;
+		this.#labelled.add(divider);
+		divider.setAttribute('aria-label', `Resize panels ${index + 1} and ${index + 2}`);
+	}
+
+	#unwireDivider(divider) {
+		for (const name of [
+			'role',
+			'tabindex',
+			'aria-orientation',
+			'aria-valuemin',
+			'aria-valuemax',
+			'aria-valuenow',
+			'aria-disabled',
+		]) {
+			divider.removeAttribute(name);
+		}
+		if (this.#labelled.has(divider)) {
+			divider.removeAttribute('aria-label');
+			this.#labelled.delete(divider);
+		}
+	}
+
+	#observeChildren() {
+		if (this.#childObserver) return;
+		// child list only — a panel's own subtree is none of the group's business
+		this.#childObserver = new MutationObserver(() => this.#handleChildMutation());
+		this.#childObserver.observe(this, { childList: true });
+	}
+
+	// MutationObserver already batches to one callback per microtask, so this
+	// runs at most once per turn no matter how many children were touched
+	#handleChildMutation() {
+		if (this.#scanning || !this.isConnected) return;
+		if (!this.#initialized) {
+			this.#init();
+			return;
+		}
+		this.#rescan();
+	}
+
+	// Re-reads the structure after a child mutation, keeping committed sizes for
+	// every panel that is still here (matched by element identity) and giving a
+	// newly added panel its authored share (or an equal one when it has no
+	// `size`). A structural change during a drag ENDS the drag: the gesture's
+	// index and measured bounds describe a layout that no longer exists.
+	#rescan() {
+		const _ = this;
+		const committed = new Map(_.#panels.map((panel, index) => [panel, _.#sizes[index]]));
+		_.#syncStructure();
+
+		// dropped when the dragged divider went away, or when it now sits between
+		// a different pair — either way its index and measure are stale
+		if (_.#drag && _.#dividers.indexOf(_.#drag.divider) !== _.#drag.index) {
+			_.#drag = null;
+			_.removeAttribute('dragging');
+		}
+		if (_.#panels.length === 0) {
+			_.#sizes = [];
+			_.#initialSizes = [];
+			return;
+		}
+
+		// #resolveInitialSizes re-reads the authored attributes (and reseeds
+		// #initialSizes, which `resetSizes` and double-click restore to)
+		_.#resolveInitialSizes();
+		_.#sizes = _.#clampSizes(_.#mergeSizes(committed));
+
+		_.#syncOrientation();
+		_.#syncDisabled();
+		_.#mirrorConstraints();
+		// a live drag owns the rendered sizes — writing here would discard the
+		// in-flight delta; the next pointermove renders
+		if (!_.#drag) _.#applySizes();
+		_.#trackVisible();
+	}
+
+	// Merges committed sizes (by element identity) with the shares for panels
+	// that are new. A new panel's share is read at FULL scale — an authored
+	// `size="25"` means 25% of the whole once the others make room, not 25% of
+	// a slice that then gets normalized again — and an unsized new panel takes
+	// an equal share (100 / panel count). The panels that stayed are scaled
+	// proportionally into whatever is left.
+	#mergeSizes(committed) {
+		const _ = this;
+		const equalShare = 100 / _.#panels.length;
+		const fresh = _.#panels.map((panel) =>
+			committed.has(panel) ? null : (_.#authoredShare(panel) ?? equalShare)
+		);
+		const freshTotal = fresh.reduce((total, size) => total + (size ?? 0), 0);
+		const keptTotal = _.#panels.reduce((total, panel) => total + (committed.get(panel) ?? 0), 0);
+		// nothing new, or the new panels alone claim everything — fall back to a
+		// plain normalization of what we have
+		if (freshTotal <= 0 || freshTotal >= 100 || keptTotal <= 0) {
+			return _.#normalizeSizes(
+				_.#panels.map((panel, index) => committed.get(panel) ?? fresh[index] ?? 0)
+			);
+		}
+		const keptScale = (100 - freshTotal) / keptTotal;
+		return _.#panels.map((panel, index) =>
+			fresh[index] === null
+				? Math.round(committed.get(panel) * keptScale * 100) / 100
+				: Math.round(fresh[index] * 100) / 100
+		);
+	}
+
+	// A panel's authored `size` as a percent of the WHOLE — unnormalized, which
+	// is what a panel arriving into a settled layout should claim. Percent forms
+	// pass straight through; a px form maps through the distributable space, the
+	// same basis #resolveInitialSizes and the drag math use.
+	#authoredShare(panel) {
+		const raw = panel.getAttribute('size');
+		if (!raw) return null;
+		if (!raw.trim().endsWith('px')) return this.#parseSize(raw, 0, 0);
+		const horizontal = this.direction === 'horizontal';
+		const dimension = horizontal ? 'width' : 'height';
+		const freeGrow = this.#panels.reduce(
+			(total, item) =>
+				total + item.getBoundingClientRect()[dimension] - this.#panelExtra(item, horizontal),
+			0
+		);
+		return this.#parseSize(raw, this.#panelExtra(panel, horizontal), freeGrow);
+	}
+
+	// Pulls a sizes array inside every panel's min/max, in the same percent
+	// domain the drag math uses, then hands the leftover to the panels that
+	// still have room. Without this a panel can hold a model size its `min`
+	// will not render, and every neighbour calculation is skewed by the gap.
+	#clampSizes(sizes) {
+		const _ = this;
+		const horizontal = _.direction === 'horizontal';
+		const dimension = horizontal ? 'width' : 'height';
+		const flexSpace = _.#panels.reduce(
+			(total, panel) =>
+				total + panel.getBoundingClientRect()[dimension] - _.#panelExtra(panel, horizontal),
+			0
+		);
+		if (flexSpace <= 0) return sizes;
+
+		const bounds = _.#panels.map((panel) => {
+			const extra = _.#panelExtra(panel, horizontal);
+			return {
+				min: Math.max(0, _.#parseConstraint(panel.getAttribute('min'), extra, flexSpace, 0)),
+				max: _.#parseConstraint(panel.getAttribute('max'), extra, flexSpace, Infinity),
+			};
 		});
+		const clamp = (size, index) => Math.min(Math.max(size, bounds[index].min), bounds[index].max);
+
+		let result = sizes.map(clamp);
+		// clamping moves the total off 100 — give the difference to the panels
+		// that can still take it, a few passes to settle
+		for (let pass = 0; pass < 4; pass += 1) {
+			const residual = 100 - result.reduce((total, size) => total + size, 0);
+			if (Math.abs(residual) < 0.01) break;
+			const eligible = result.map((size, index) =>
+				residual > 0 ? size < bounds[index].max : size > bounds[index].min
+			);
+			const count = eligible.filter(Boolean).length;
+			if (count === 0) break;
+			const step = residual / count;
+			result = result.map((size, index) => (eligible[index] ? clamp(size + step, index) : size));
+		}
+		return result.map((size) => Math.round(size * 100) / 100);
 	}
 
 	#syncOrientation() {
@@ -411,14 +657,17 @@ export class SplitPanelGroup extends HTMLElement {
 	}
 
 	#dispatch(type, detail) {
-		this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true }));
+		// composed so a group inside a shadow root still reports to its host page
+		this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
 	}
 
-	// resolves an event to one of this group's own dividers — the parentElement
-	// check keeps nested groups from driving each other's panels
+	// resolves an event to one of this group's own wired dividers — the
+	// parentElement check keeps nested groups from driving each other's panels,
+	// and the index check ignores strays (unpaired author-supplied dividers)
 	#resolveDivider(event) {
 		const divider = event.target.closest?.('split-divider');
 		if (!divider || divider.parentElement !== this) return null;
+		if (this.#dividers.indexOf(divider) === -1) return null;
 		if (this.disabled || divider.hasAttribute('disabled')) return null;
 		return divider;
 	}
@@ -469,8 +718,7 @@ export class SplitPanelGroup extends HTMLElement {
 			return;
 		}
 		const coordinate = _.direction === 'vertical' ? e.clientY : e.clientX;
-		const deltaShare =
-			((coordinate - drag.startCoordinate) * 100) / drag.measure.flexSpace;
+		const deltaShare = ((coordinate - drag.startCoordinate) * 100) / drag.measure.flexSpace;
 		_.#setPairSizes(drag.index, drag.startShare + deltaShare, drag.measure);
 	}
 
