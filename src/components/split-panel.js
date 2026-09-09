@@ -7,8 +7,9 @@
 export class SplitPanel extends HTMLElement {}
 
 /**
- * Drag handle between two adjacent panels. Generated automatically by
- * <split-panel-group> — authors never write it by hand.
+ * Drag handle between two adjacent panels. <split-panel-group> generates one
+ * for any adjacent pair that has none, and adopts — wires, but never moves or
+ * removes — any the author wrote between two panels.
  * @class SplitDivider
  * @extends HTMLElement
  */
